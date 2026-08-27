@@ -74,6 +74,53 @@ static SANDBOX: OnceLock<GlobalSandboxState> = OnceLock::new();
 static CONFIGURED_PROFILE: OnceLock<String> = OnceLock::new();
 static AUTO_ALLOW_BASH: AtomicBool = AtomicBool::new(false);
 const BWRAP_ENV_VAR: &str = "__GROK_INSIDE_BWRAP";
+/// Absolute path override for the `bwrap` binary.
+///
+/// Without this the sandbox helper is resolved from `PATH`, which means a
+/// kernel security boundary is selected by `PATH` order: any directory
+/// prepended by a wrapper, a launcher, or another tool silently decides which
+/// bubblewrap enforces the policy. Set this to an absolute path to pin it.
+///
+/// A relative or non-existent value is refused rather than silently ignored,
+/// because falling back to `PATH` is exactly the behaviour the caller set this
+/// variable to prevent.
+const BWRAP_PATH_ENV_VAR: &str = "GROK_BWRAP_PATH";
+
+/// Resolve the bwrap program: the pinned absolute path if `GROK_BWRAP_PATH` is
+/// set and usable, otherwise the bare name for a `PATH` lookup.
+///
+/// Returns `None` when the override is set but unusable, so the caller can
+/// refuse to start instead of quietly falling back to an unpinned `PATH`.
+fn bwrap_program() -> Option<std::ffi::OsString> {
+    let Some(raw) = std::env::var_os(BWRAP_PATH_ENV_VAR) else {
+        return Some(std::ffi::OsString::from("bwrap"));
+    };
+    if raw.is_empty() {
+        eprintln!(
+            "error: {BWRAP_PATH_ENV_VAR} is set but empty; refusing to fall back to a \
+             PATH lookup for the sandbox helper"
+        );
+        return None;
+    }
+    let path = Path::new(&raw);
+    if !path.is_absolute() {
+        eprintln!(
+            "error: {BWRAP_PATH_ENV_VAR} must be an absolute path, got {}; refusing to \
+             fall back to a PATH lookup for the sandbox helper",
+            path.display()
+        );
+        return None;
+    }
+    if !path.exists() {
+        eprintln!(
+            "error: {BWRAP_PATH_ENV_VAR} points at {}, which does not exist; refusing to \
+             fall back to a PATH lookup for the sandbox helper",
+            path.display()
+        );
+        return None;
+    }
+    Some(raw)
+}
 pub fn is_inside_bwrap() -> bool {
     std::env::var(BWRAP_ENV_VAR).is_ok()
 }
@@ -314,7 +361,8 @@ pub(crate) fn bwrap_reexec_command_ex(
         }
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut cmd = std::process::Command::new("bwrap");
+    let program = bwrap_program()?;
+    let mut cmd = std::process::Command::new(program);
     cmd.arg("--cap-drop").arg("ALL");
     cmd.arg("--bind").arg("/").arg("/");
     for path in deny_write_optional {
@@ -689,6 +737,61 @@ mod tests {
         assert!(result.is_some(), "should return Some when not inside bwrap");
         let cmd = result.unwrap();
         assert_eq!(cmd.get_program(), "bwrap", "program should be bwrap");
+    }
+
+    #[test]
+    #[serial]
+    fn bwrap_program_defaults_to_path_lookup() {
+        let _g = EnvGuard::remove(BWRAP_PATH_ENV_VAR);
+        assert_eq!(
+            bwrap_program().as_deref(),
+            Some(std::ffi::OsStr::new("bwrap")),
+            "unset override must keep the historical PATH lookup"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn bwrap_program_honours_absolute_override() {
+        // /bin/sh stands in for a bwrap binary: the resolver only checks that
+        // the path is absolute and exists, never that it is really bubblewrap.
+        let _g = EnvGuard::set(BWRAP_PATH_ENV_VAR, "/bin/sh");
+        assert_eq!(
+            bwrap_program().as_deref(),
+            Some(std::ffi::OsStr::new("/bin/sh")),
+            "an absolute, existing override must be used verbatim"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn bwrap_program_refuses_relative_override() {
+        let _g = EnvGuard::set(BWRAP_PATH_ENV_VAR, "bwrap");
+        assert!(
+            bwrap_program().is_none(),
+            "a relative override must refuse rather than fall back to PATH, \
+             which is the behaviour the caller set it to prevent"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn bwrap_program_refuses_missing_override() {
+        let _g = EnvGuard::set(BWRAP_PATH_ENV_VAR, "/nonexistent-bwrap-xyz-12345");
+        assert!(
+            bwrap_program().is_none(),
+            "a missing override must refuse rather than fall back to PATH"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn bwrap_program_refuses_empty_override() {
+        let _g = EnvGuard::set(BWRAP_PATH_ENV_VAR, "");
+        assert!(
+            bwrap_program().is_none(),
+            "an empty override must refuse rather than fall back to PATH"
+        );
     }
     #[test]
     #[serial(bwrap_env)]
