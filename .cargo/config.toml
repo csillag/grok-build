@@ -35,7 +35,20 @@ rustflags = [
 rustflags = ["-C", "force-unwind-tables=yes"]
 
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=neoverse-v2", "-C", "force-unwind-tables=yes"]
+# LOCAL PATCH -- not for upstream.
+#
+# Upstream pins `target-cpu=neoverse-v2`, which is Armv9-A and whose baseline
+# includes SVE2. superego is Cortex-A76 + Cortex-A55: Armv8.2-A, no SVE. With
+# the upstream flag the build SUCCEEDS and the binary dies with SIGILL, possibly
+# only when execution first reaches a function LLVM chose to vectorise -- so it
+# can pass a smoke test and fail later, looking like a bug in grok rather than a
+# wrong build flag. Verified 2026-08-27: no `sve` in /proc/cpuinfo Features, and
+# `rustc --print target-cpus` reports `native ... (currently cortex-a76)`.
+#
+# Dropping the flag entirely (rather than using target-cpu=native) keeps the
+# binary portable to the brain-cell nodes, which are not this silicon either.
+# `force-unwind-tables` is kept: it costs binary size and buys backtraces.
+rustflags = ["-C", "force-unwind-tables=yes"]
 
 [target.x86_64-unknown-linux-musl]
 rustflags = [
