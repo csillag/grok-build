@@ -16,11 +16,11 @@ use crate::deny::{
 };
 use crate::hook_write_deny::profile_hook_write_deny;
 use crate::paths::grok_home;
-#[cfg(all(feature = "enforce", unix))]
-use crate::paths::{DEVICE_DIRS, DEVICE_FILES};
 use crate::paths::{
     essential_writable_paths, essential_writable_paths_minimal, essential_writable_paths_strict,
 };
+#[cfg(all(feature = "enforce", unix))]
+use crate::paths::{DEVICE_DIRS, DEVICE_FILES};
 use xai_grok_config::{GlobalHookSource, SANDBOX_CONFIG_FILENAME};
 
 /// A resolved sandbox profile ready to be converted to a `CapabilitySet`.
@@ -40,6 +40,50 @@ pub struct SandboxProfile {
     pub default_read: bool,
     /// Whether child processes should have network blocked
     pub restrict_network: bool,
+}
+
+/// Extra read-only directories for this process, colon-separated. Set by the
+/// launcher (e.g. a session manager granting a per-session directory list),
+/// because a kernel sandbox cannot be widened after the process starts.
+pub const ENV_READ_ONLY: &str = "GROK_SANDBOX_READ_ONLY";
+/// Extra read-write directories for this process, colon-separated.
+pub const ENV_READ_WRITE: &str = "GROK_SANDBOX_READ_WRITE";
+
+/// The directories in a colon-separated list, under the same literal-directory
+/// rules as `read_only` / `read_write` in `sandbox.toml`, and absolute only: a
+/// relative entry would resolve against whatever the working directory is.
+fn env_list_paths(var: &str, raw: &str) -> Vec<PathBuf> {
+    raw.split(':')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let path = normalize_allow_path(entry)?;
+            if path.is_absolute() {
+                Some(path)
+            } else {
+                tracing::warn!(var, path = %entry, "sandbox path from the environment is not absolute; skipping");
+                None
+            }
+        })
+        .collect()
+}
+
+/// Add the `GROK_SANDBOX_READ_ONLY` / `GROK_SANDBOX_READ_WRITE` directories to a
+/// resolved profile. `lookup` is the environment (a parameter for tests).
+fn apply_env_paths(profile: &mut SandboxProfile, lookup: impl Fn(&str) -> Option<String>) {
+    if let Some(raw) = lookup(ENV_READ_ONLY) {
+        for path in env_list_paths(ENV_READ_ONLY, &raw) {
+            if !profile.read_only.contains(&path) {
+                profile.read_only.push(path);
+            }
+        }
+    }
+    if let Some(raw) = lookup(ENV_READ_WRITE) {
+        for path in env_list_paths(ENV_READ_WRITE, &raw) {
+            if !profile.read_write.contains(&path) {
+                profile.read_write.push(path);
+            }
+        }
+    }
 }
 
 fn resolve_write_deny(profile: &ProfileName) -> anyhow::Result<Vec<GlobalHookSource>> {
@@ -369,6 +413,9 @@ impl ProfileName {
         config: &SandboxConfig,
     ) -> anyhow::Result<(SandboxProfile, Vec<PathBuf>)> {
         let mut profile = self.resolve(workspace, config)?;
+        // After the profile's own grants, before the socket denies, so a
+        // deny still wins over an environment grant.
+        apply_env_paths(&mut profile, |var| std::env::var(var).ok());
         let mut runtime_socket_denies = Vec::new();
         // Devbox keeps host D-Bus/systemd; container-runtime masks still follow `restrict_network`.
         let skip_dbus = match self {
@@ -569,6 +616,57 @@ impl ProfileName {
 mod tests {
     use super::*;
     use crate::test_util::{network_inheritance_config, skip_if_host_hook_write_deny_unresolvable};
+
+    fn bare_profile() -> SandboxProfile {
+        SandboxProfile {
+            name: "t".to_string(),
+            read_only: vec![PathBuf::from("/usr")],
+            read_write: vec![PathBuf::from("/work")],
+            deny: vec![],
+            write_deny: vec![],
+            default_read: false,
+            restrict_network: false,
+        }
+    }
+
+    #[test]
+    fn env_list_keeps_absolute_literal_dirs() {
+        assert_eq!(
+            env_list_paths("V", "/a/b::relative/c:/d/**:/e/*/f:/g"),
+            vec![
+                PathBuf::from("/a/b"),
+                PathBuf::from("/d"),
+                PathBuf::from("/g")
+            ]
+        );
+        assert!(env_list_paths("V", "").is_empty());
+    }
+
+    #[test]
+    fn env_paths_extend_the_profile_without_duplicates() {
+        let mut profile = bare_profile();
+        apply_env_paths(&mut profile, |var| match var {
+            ENV_READ_ONLY => Some("/ref:/usr".to_string()),
+            ENV_READ_WRITE => Some("/home/u/commissura:/work".to_string()),
+            _ => None,
+        });
+        assert_eq!(
+            profile.read_only,
+            vec![PathBuf::from("/usr"), PathBuf::from("/ref")]
+        );
+        assert_eq!(
+            profile.read_write,
+            vec![PathBuf::from("/work"), PathBuf::from("/home/u/commissura")]
+        );
+    }
+
+    #[test]
+    fn unset_env_leaves_the_profile_alone() {
+        let mut profile = bare_profile();
+        apply_env_paths(&mut profile, |_| None);
+        assert_eq!(profile.read_only, vec![PathBuf::from("/usr")]);
+        assert_eq!(profile.read_write, vec![PathBuf::from("/work")]);
+    }
 
     #[test]
     fn parse_profile_names() {
