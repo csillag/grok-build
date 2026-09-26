@@ -221,6 +221,14 @@ The script holds stdin open for 6 seconds after the request. Closing stdin at
 once is a trap: if startup is slow, grok reaches EOF before it has
 initialised, exits 0, and answers nothing. That looks like a broken sandbox.
 
+### Provider speed
+
+`./host/tokens-per-sec.sh` reads `shell.turn.inference_done` from
+`~/.grok/logs/unified.jsonl`. That line is the after-the-call rate `main`
+already computes. The script prints each session and a decode-time-weighted
+total. Default window is 15 minutes. AoE grok processes share this log
+because they bind-mount `~/.grok`.
+
 ### 7. Close out
 
 Tell the Agent of Empires side the binary changed. Add a row to the record
