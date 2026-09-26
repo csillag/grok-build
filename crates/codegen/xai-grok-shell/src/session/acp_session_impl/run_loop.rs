@@ -2090,6 +2090,22 @@ pub(super) async fn run_session(
                                 .await;
                             }
                         }
+                        SessionCommand::SteerAcp { text, images, respond_to } => {
+                            let turn_running = session
+                                .current_prompt_id
+                                .lock()
+                                .ok()
+                                .and_then(|g| g.clone())
+                                .is_some();
+                            if turn_running {
+                                session.pending_interjections.push(PendingInterjection {
+                                    text,
+                                    attachments: images,
+                                });
+                                tracing::info!("Queued ACP steering for the next safe point");
+                            }
+                            let _ = respond_to.send(turn_running);
+                        }
                         SessionCommand::GoalSummaryTurn { prompt_text } => {
                             // Queue a synthetic prompt so the model gets a turn to print a visible progress summary
                             // Mirrors the pattern used by `maybe_drain_notifications`

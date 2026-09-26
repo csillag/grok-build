@@ -565,6 +565,9 @@ impl acp::Agent for MvpAgent {
                     );
                     serde_json::json!({
                     "grokShell": true,
+                    // AoE injects a follow-up into the running turn only when
+                    // this is advertised. The handler is `_session/steering`.
+                    "steering": { "supported": true },
                     // Re-deriving this precedence client-side has regressed OIDC refresh, so clients consume the agent's choice from here
                     "defaultAuthMethodId": default_auth_method_id_wire,
                     // The agent can drive in-process SDK MCP servers over the ACP reverse channel (`x.ai/mcp/sdk_call`)
@@ -2031,6 +2034,9 @@ impl acp::Agent for MvpAgent {
                 )
             }
             "x.ai/interject" => crate::extensions::interject::handle(self, &args).await,
+            crate::extensions::steer::STEER_METHOD => {
+                crate::extensions::steer::handle(self, &args).await
+            }
             "x.ai/feedback" | "x.ai/feedback/dismiss" | "x.ai/feedback/drafts/list"
             | "x.ai/feedback/drafts/get" | "x.ai/feedback/drafts/delete"
             | "x.ai/feedback/drafts/update" | "x.ai/feedback/upload-trace"

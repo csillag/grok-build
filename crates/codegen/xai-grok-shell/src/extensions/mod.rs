@@ -18,6 +18,7 @@ pub mod git;
 pub mod hooks;
 pub mod hunk_tracker;
 pub mod interject;
+pub mod steer;
 pub mod jj;
 pub mod marketplace;
 pub mod mcp;

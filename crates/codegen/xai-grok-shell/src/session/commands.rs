@@ -906,6 +906,14 @@ pub enum SessionCommand {
         /// Empty from text-only or older clients.
         images: Vec<acp::ImageContent>,
     },
+    /// ACP `_session/steering`. Inject into the running turn, or report that
+    /// no turn is running. Does not start a turn: the client resends as
+    /// `session/prompt` when the answer is false.
+    SteerAcp {
+        text: String,
+        images: Vec<acp::ImageContent>,
+        respond_to: oneshot::Sender<bool>,
+    },
     /// Trigger a model turn so the model can print a visible goal progress summary.
     /// The goal orchestrator injects a system reminder into context (via `push_parent_reminder`) *before* sending this command.
     /// The session actor queues a short synthetic prompt instructing the model to summarize the reminder, then calls `maybe_start_running_task`.
